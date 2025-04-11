@@ -64,6 +64,7 @@ from axolotl.processing_strategies import get_processing_strategy
 from axolotl.utils import is_comet_available, is_mlflow_available
 from axolotl.utils.callbacks import (
     EvalFirstStepCallback,
+    FractionalEpochCallback,
     GCCallback,
     GPUStatsCallback,
     LossWatchDogCallback,
@@ -229,7 +230,7 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
     using TRL.
     """
 
-    def get_callbacks(self):
+    def get_callbacks(self, total_num_steps=None):
         callbacks = super().get_callbacks()
         callbacks.append(GPUStatsCallback(self.cfg))
         callbacks.append(EvalFirstStepCallback())
@@ -248,6 +249,13 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
 
         if self.cfg.gc_steps:
             callbacks.append(GCCallback(gc_steps=self.cfg.gc_steps))
+            
+        if self.cfg.save_fractions and total_num_steps:
+            callbacks.append(FractionalEpochCallback(
+                save_fractions=self.cfg.save_fractions,
+                total_steps=total_num_steps,
+                num_epochs=self.cfg.num_epochs
+            ))
 
         return callbacks
 
@@ -431,7 +439,19 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             # we have an eval set, but no steps defined, default to use epoch
             training_arguments_kwargs["eval_strategy"] = "epoch"
 
-        if self.cfg.save_steps:
+        if self.cfg.save_fractions:
+            # Calculate steps per epoch (total dataset size / batch size / grad accum steps)
+            steps_per_epoch = total_num_steps / self.cfg.num_epochs
+            
+            # Get the smallest fraction to determine the checkpointing interval
+            min_fraction = min(self.cfg.save_fractions)
+            save_steps = max(1, int(steps_per_epoch * min_fraction))
+            
+            training_arguments_kwargs["save_strategy"] = "steps"
+            training_arguments_kwargs["save_steps"] = save_steps
+            # We'll use this to track and name the checkpoints correctly
+            training_arguments_kwargs["save_fractions"] = sorted(self.cfg.save_fractions)
+        elif self.cfg.save_steps:
             training_arguments_kwargs["save_strategy"] = "steps"
             training_arguments_kwargs["save_steps"] = self.cfg.save_steps
         elif self.cfg.save_strategy:
@@ -842,7 +862,7 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             eval_dataset=self.eval_dataset,
             args=training_args,
             data_collator=self.build_collator(training_args, **data_collator_kwargs),
-            callbacks=self.get_callbacks(),
+            callbacks=self.get_callbacks(total_num_steps=total_num_steps),
             **trainer_kwargs,
         )
         trainer = self.hook_post_create_trainer(trainer)

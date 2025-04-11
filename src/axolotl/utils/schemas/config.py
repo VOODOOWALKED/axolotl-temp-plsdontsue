@@ -277,6 +277,7 @@ class AxolotlInputConfig(
     eval_strategy: str | None = None
     save_steps: int | float | None = None
     saves_per_epoch: int | None = None
+    save_fractions: list[float] | None = None
     save_strategy: str | None = None
     save_total_limit: int | None = None
     logging_steps: int | None = None
@@ -629,6 +630,24 @@ class AxolotlInputConfig(
             raise ValueError(
                 "save_steps and saves_per_epoch are mutually exclusive and cannot be used together."
             )
+        if data.get("save_fractions"):
+            if data.get("save_steps"):
+                raise ValueError(
+                    "save_fractions and save_steps are mutually exclusive and cannot be used together."
+                )
+            if data.get("saves_per_epoch"):
+                raise ValueError(
+                    "save_fractions and saves_per_epoch are mutually exclusive and cannot be used together."
+                )
+            if data.get("save_strategy") and data.get("save_strategy") != "steps":
+                raise ValueError(
+                    "save_fractions requires save_strategy to be 'steps' or not set."
+                )
+            # Check that fractions are between 0 and 1
+            if any(f <= 0 or f > 1 for f in data.get("save_fractions")):
+                raise ValueError(
+                    "All values in save_fractions must be greater than 0 and less than or equal to 1."
+                )
         return data
 
     @model_validator(mode="before")

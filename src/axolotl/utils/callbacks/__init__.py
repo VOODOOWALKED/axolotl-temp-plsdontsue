@@ -834,3 +834,96 @@ class GCCallback(TrainerCallback):
     ):
         torch.cuda.empty_cache()
         gc.collect()
+
+
+class FractionalEpochCallback(TrainerCallback):
+    """Callback to handle fractional epoch checkpointing.
+    
+    This callback tracks training progress as a fraction of epochs and triggers
+    checkpoints when it crosses specified epoch fractions. The checkpoint names
+    include the fraction and a counter for how many times that fraction has been hit.
+    
+    For example, with save_fractions=[0.1, 0.5, 1.0], checkpoints will be saved at 
+    10%, 50%, and 100% of each epoch, with names like checkpoint-0.1x1, checkpoint-0.5x1, etc.
+    """
+
+    def __init__(self, save_fractions, total_steps, num_epochs):
+        """
+        Args:
+            save_fractions: List of epoch fractions to save at [0.1, 0.5, etc.]
+            total_steps: Total training steps
+            num_epochs: Total number of epochs
+        """
+        self.save_fractions = sorted(save_fractions)
+        self.steps_per_epoch = total_steps / num_epochs
+        self.fraction_counters = {fraction: 0 for fraction in save_fractions}
+        self.next_checkpoint_step = {}
+        
+        # Calculate the steps at which to save checkpoints
+        for fraction in self.save_fractions:
+            self.next_checkpoint_step[fraction] = self._calculate_next_checkpoint_step(
+                fraction, 1
+            )
+        
+        # Keep track of the current epoch
+        self.current_epoch = 0
+
+    def _calculate_next_checkpoint_step(self, fraction, epoch_num):
+        """Calculate the step number for the next checkpoint at this fraction."""
+        return int((epoch_num - 1 + fraction) * self.steps_per_epoch)
+
+    def on_step_end(
+        self, args, state, control, **kwargs  # pylint: disable=unused-argument
+    ):
+        # Check if we've crossed an epoch boundary
+        current_epoch = int(state.global_step / self.steps_per_epoch) + 1
+        if current_epoch > self.current_epoch:
+            # We've started a new epoch, update all the next checkpoint steps
+            self.current_epoch = current_epoch
+            for fraction in self.save_fractions:
+                if fraction < 1.0:  # For fractions less than 1.0
+                    self.next_checkpoint_step[fraction] = self._calculate_next_checkpoint_step(
+                        fraction, current_epoch
+                    )
+        
+        # Check if we've hit any of our fraction checkpoints
+        for fraction in self.save_fractions:
+            if (state.global_step >= self.next_checkpoint_step[fraction] and 
+                (fraction == 1.0 or state.global_step < self.next_checkpoint_step.get(1.0, float('inf')))):
+                
+                # Special case for fraction 1.0, which coincides with the epoch end
+                # The original Trainer will handle this with save_strategy="epoch"
+                if fraction == 1.0 and args.save_strategy == "epoch":
+                    continue
+                
+                # Increment the counter for this fraction
+                self.fraction_counters[fraction] += 1
+                
+                # Calculate the next step for this fraction
+                if fraction < 1.0:
+                    self.next_checkpoint_step[fraction] = self._calculate_next_checkpoint_step(
+                        fraction, self.current_epoch + (1 if state.global_step % self.steps_per_epoch == 0 else 0)
+                    )
+                else:
+                    self.next_checkpoint_step[fraction] = self._calculate_next_checkpoint_step(
+                        fraction, self.current_epoch + 1
+                    )
+                
+                # Trigger a checkpoint save with a custom checkpoint subfolder name
+                output_dir = args.output_dir
+                checkpoint_name = f"{PREFIX_CHECKPOINT_DIR}-{fraction}x{self.fraction_counters[fraction]}"
+                
+                # Create the checkpoint directory
+                checkpoint_folder = os.path.join(output_dir, checkpoint_name)
+                os.makedirs(checkpoint_folder, exist_ok=True)
+                
+                # Save the model and state
+                kwargs["model"].save_pretrained(checkpoint_folder)
+                
+                # Update the folder name in the state
+                state.save_to_json(os.path.join(checkpoint_folder, "trainer_state.json"))
+                
+                # Log the checkpoint
+                LOG.info(f"Saving model checkpoint at fraction {fraction} of epoch {self.current_epoch} to {checkpoint_folder}")
+                
+        return control

@@ -478,6 +478,7 @@ eval_strategy: # Set to `"no"` to skip evaluation, `"epoch"` at end of each epoc
 save_strategy: # Set to `"no"` to skip checkpoint saves, `"epoch"` at end of each epoch, `"best"` when better result is achieved, leave empty to infer from `save_steps`.
 save_steps: # Leave empty to save at each epoch, integer for every N steps. float for fraction of total steps
 saves_per_epoch: # number of times per epoch to save a checkpoint, mutually exclusive with save_steps
+save_fractions: # A list of epoch fractions for checkpointing (e.g., [0.01, 0.1, 0.5, 1.0]). Checkpoints will be named with both the fraction and occurrence count. Mutually exclusive with save_steps and saves_per_epoch.
 save_total_limit: # Checkpoints saved at a time
 # Maximum number of iterations to train for. It precedes num_epochs which means that
 # if both are set, num_epochs will not be guaranteed.
